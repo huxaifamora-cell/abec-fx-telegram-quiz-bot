@@ -1,0 +1,40 @@
+# Render Blueprint — deploys both pieces of this project at once.
+# In the Render dashboard: New → Blueprint → connect this repo → Apply.
+# (Render finds this file automatically because it's named render.yaml
+# at the repo root.)
+#
+# This declares two services:
+#   1. abecfx-quiz-webapp  — a free Static Site serving webapp/index.html.
+#      Its URL becomes the Mini App's public link.
+#   2. abecfx-quiz-bot     — a Background Worker running bot.js.
+#      Background Workers are NOT on Render's free tier (see README.md
+#      for a free Web Service alternative using the same bot.js).
+#
+# After the first deploy, set BOT_TOKEN and WEBAPP_URL for the bot
+# service in the Render dashboard (Environment tab) — Blueprint env vars
+# marked `sync: false` are deliberately left for you to fill in there,
+# not committed to the repo.
+
+services:
+  - type: web
+    name: abecfx-quiz-webapp
+    runtime: static
+    rootDir: webapp
+    staticPublishPath: .
+    buildCommand: ""
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=300
+
+  - type: worker
+    name: abecfx-quiz-bot
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: node bot.js
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBAPP_URL
+        sync: false
