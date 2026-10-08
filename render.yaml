@@ -1,0 +1,25 @@
+# Render Blueprint — deploys this project as a single service.
+# In the Render dashboard: New → Blueprint → connect this repo → Apply.
+# (Render finds this file automatically because it's named render.yaml
+# at the repo root.)
+#
+# bot.js runs the Telegram bot (long polling) AND serves webapp/index.html
+# over HTTP from the same process, so one free Render Web Service is all
+# this needs — no separate static site, no WEBAPP_URL to copy between
+# services. Render sets RENDER_EXTERNAL_URL automatically, and bot.js uses
+# that as the Mini App URL unless you override it with WEBAPP_URL.
+#
+# After the first deploy, set BOT_TOKEN for the service in the Render
+# dashboard (Environment tab) — it's marked `sync: false` below so it's
+# left for you to fill in there, not committed to the repo.
+
+services:
+  - type: web
+    name: abecfx-quiz-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node bot.js
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
