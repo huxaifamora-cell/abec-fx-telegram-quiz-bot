@@ -167,8 +167,35 @@ if (PORT) {
   let html;
   try {
     html = fs.readFileSync(webappFile);
+    // Adds the small script that lets the quiz run inside the student portal (inert in Telegram).
+    const text = html.toString('utf8');
+    const tag = '<script src="/embed.js"></script>';
+    html = Buffer.from(/<\/body>/i.test(text) ? text.replace(/<\/body>/i, () => tag + '\n</body>') : text + '\n' + tag + '\n');
   } catch (e) {
     console.error(`Could not read ${webappFile}:`, e.message);
+  }
+  let embedJs = null;
+  try {
+    embedJs = fs.readFileSync(path.join(__dirname, 'webapp', 'embed.js'));
+  } catch (e) {
+    console.error('Could not read webapp/embed.js (the quiz will not work inside the portal):', e.message);
+  }
+
+  // ---- Portal sign-in check ---------------------------------------------------
+  // When the quiz is opened inside the student portal, the website hands it a short-lived pass signed with
+  // QUIZ_API_KEY (the same code lives in the website's quiztoken.js). The pass names one registration number.
+  function verifyPortalToken(token) {
+    if (typeof token !== 'string' || token.length > 600 || !QUIZ_API_KEY) return null;
+    const [payload, sig, extra] = token.split('.');
+    if (!payload || !sig || extra !== undefined) return null;
+    const calc = crypto.createHmac('sha256', QUIZ_API_KEY).update('portal.' + payload).digest('base64url');
+    const a = Buffer.from(calc), b = Buffer.from(sig);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    try {
+      const d = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+      if (!/^ABECFX\/\d{2}\/\d{4}$/.test(d.r) || !(d.e > Date.now())) return null;
+      return { reg: d.r };
+    } catch (e) { return null; }
   }
 
   // ---- Telegram sign-in check -------------------------------------------------
@@ -244,24 +271,37 @@ if (PORT) {
     if (!REG_SITE_URL || !QUIZ_API_KEY) {
       return sendJson(res, 503, { error: 'The quiz is not connected to the student records yet.' });
     }
-    const user = verifyInitData(req.headers['x-telegram-init-data']);
-    if (!user) {
-      return sendJson(res, 401, { error: 'Open this quiz from the Telegram bot so we can sign you in.' });
+    // Signed in either through the student portal (a signed pass) or through Telegram (signed initData).
+    // In both cases who the student is comes from the signed value, never from what the page sends.
+    let user = null;
+    let portal = null;
+    const pass = req.headers['x-portal-token'];
+    if (pass) {
+      portal = verifyPortalToken(pass);
+      if (!portal) {
+        return sendJson(res, 401, { error: 'Your quiz session has expired. Close the quiz and open it again from your student portal.' });
+      }
+    } else {
+      user = verifyInitData(req.headers['x-telegram-init-data']);
+      if (!user) {
+        return sendJson(res, 401, { error: 'Open this quiz from your student portal or from the Telegram bot so we can sign you in.' });
+      }
     }
-    if (limited(user.id)) return sendJson(res, 429, { error: 'Too many requests. Please wait a few minutes.' });
+    if (limited(portal ? 'p:' + portal.reg : user.id)) return sendJson(res, 429, { error: 'Too many requests. Please wait a few minutes.' });
 
     try {
       if (req.method === 'GET' && url.pathname === '/api/student') {
-        const out = await callSite('/api/quiz/student?reg=' + encodeURIComponent(url.searchParams.get('reg') || ''));
+        const reg = portal ? portal.reg : (url.searchParams.get('reg') || '');
+        const out = await callSite('/api/quiz/student?reg=' + encodeURIComponent(reg));
         return sendJson(res, out.status, out.body);
       }
       if (req.method === 'POST' && url.pathname === '/api/submit') {
         const b = await readJson(req);
         const out = await callSite('/api/quiz/result', {
           method: 'POST',
-          body: JSON.stringify({
-            reg: b.reg, score: b.score, total: b.total, breakdown: b.breakdown, telegramId: user.id,
-          }),
+          body: JSON.stringify(portal
+            ? { reg: portal.reg, score: b.score, total: b.total, breakdown: b.breakdown, source: 'portal' }
+            : { reg: b.reg, score: b.score, total: b.total, breakdown: b.breakdown, telegramId: user.id }),
         });
         return sendJson(res, out.status, out.body);
       }
@@ -278,6 +318,11 @@ if (PORT) {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname.startsWith('/api/')) {
         handleApi(req, res, url);
+        return;
+      }
+      if (url.pathname === '/embed.js' && embedJs) {
+        res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+        res.end(embedJs);
         return;
       }
       if (url.pathname === '/healthz') {
